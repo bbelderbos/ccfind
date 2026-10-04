@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use std::{env, fs, io};
 
 use ccfind::render::{Style, render_hit};
-use ccfind::{Hit, Session, parse_session, search};
+use ccfind::{Hit, Session, parse_session, score, search, term_weights};
 use rayon::prelude::*;
 
 const MAX_RESULTS: usize = 10;
@@ -15,7 +15,7 @@ fn main() -> ExitCode {
         .map(|a| a.to_ascii_lowercase())
         .collect();
     if terms.is_empty() {
-        eprintln!("usage: ccfind <term>...   (ranked by terms matched, case-insensitive)");
+        eprintln!("usage: ccfind <term>...   (rare terms rank higher, case-insensitive)");
         return ExitCode::from(2);
     }
     let Some(home) = env::var_os("HOME") else {
@@ -42,8 +42,12 @@ fn main() -> ExitCode {
             Some((session, hit))
         })
         .collect();
+    let only_hits: Vec<&Hit> = hits.iter().map(|(_, hit)| hit).collect();
+    let weights = term_weights(files.len(), &only_hits, terms.len());
     hits.sort_by(|(a, a_hit), (b, b_hit)| {
-        (b_hit.score, &b.last_active).cmp(&(a_hit.score, &a.last_active))
+        score(b_hit, &weights)
+            .total_cmp(&score(a_hit, &weights))
+            .then_with(|| b.last_active.cmp(&a.last_active))
     });
 
     let style = Style {

@@ -100,11 +100,12 @@ fn add_turn(session: &mut Session, turn: Turn) {
 
 #[derive(Debug, PartialEq)]
 pub struct Hit {
-    pub score: usize,
+    /// Indices into the query terms this session contains.
+    pub matched: Vec<usize>,
     pub snippet: String,
 }
 
-/// Scores a session by how many distinct terms (ASCII-lowercased) it contains; `None` if none.
+/// Finds which terms (ASCII-lowercased) a session contains; `None` if none.
 pub fn search(session: &Session, terms: &[String]) -> Option<Hit> {
     let lowered: Vec<String> = session
         .texts
@@ -117,8 +118,8 @@ pub fn search(session: &Session, terms: &[String]) -> Option<Hit> {
         .unwrap_or_default()
         .to_ascii_lowercase();
     let found = |term: &String| title.contains(term) || lowered.iter().any(|t| t.contains(term));
-    let score = terms.iter().filter(|term| found(term)).count();
-    if score == 0 {
+    let matched: Vec<usize> = (0..terms.len()).filter(|&i| found(&terms[i])).collect();
+    if matched.is_empty() {
         return None;
     }
     let term_count = |t: &String| terms.iter().filter(|term| t.contains(*term)).count();
@@ -133,7 +134,23 @@ pub fn search(session: &Session, terms: &[String]) -> Option<Hit> {
         }
         _ => session.title.clone()?,
     };
-    Some(Hit { score, snippet })
+    Some(Hit { matched, snippet })
+}
+
+/// Per-term IDF weights: a term found in few sessions counts more than one found in many.
+pub fn term_weights(total_sessions: usize, hits: &[&Hit], term_count: usize) -> Vec<f64> {
+    let mut doc_freq = vec![0usize; term_count];
+    for i in hits.iter().flat_map(|hit| &hit.matched) {
+        doc_freq[*i] += 1;
+    }
+    doc_freq
+        .iter()
+        .map(|&df| ((1 + total_sessions) as f64 / (1 + df) as f64).ln())
+        .collect()
+}
+
+pub fn score(hit: &Hit, weights: &[f64]) -> f64 {
+    hit.matched.iter().map(|&i| weights[i]).sum()
 }
 
 fn snippet(text: &str, at: usize) -> String {
@@ -186,14 +203,14 @@ not json at all"#;
     fn scores_all_terms_across_messages() {
         let session = parse_session("abc", TRANSCRIPT);
         let hit = search(&session, &terms(&["preso", "borrow"])).unwrap();
-        assert_eq!(hit.score, 2);
+        assert_eq!(hit.matched, vec![0, 1]);
     }
 
     #[test]
     fn partial_match_scores_lower() {
         let session = parse_session("abc", TRANSCRIPT);
         let hit = search(&session, &terms(&["preso", "python"])).unwrap();
-        assert_eq!(hit.score, 1);
+        assert_eq!(hit.matched, vec![0]);
     }
 
     #[test]
@@ -220,6 +237,30 @@ not json at all"#;
         let session = parse_session("abc", TRANSCRIPT);
         let hit = search(&session, &terms(&["rust", "transcript"])).unwrap();
         assert_eq!(hit.snippet, "give me feedback on my Rust preso transcript");
+    }
+
+    fn hit(matched: &[usize]) -> Hit {
+        Hit {
+            matched: matched.to_vec(),
+            snippet: String::new(),
+        }
+    }
+
+    #[test]
+    fn one_rare_term_outranks_two_common_ones() {
+        let common: Vec<Hit> = (0..8).map(|_| hit(&[0, 1])).collect();
+        let rare = hit(&[2]);
+        let all: Vec<&Hit> = common.iter().chain([&rare]).collect();
+        let weights = term_weights(10, &all, 3);
+        assert!(score(&rare, &weights) > score(&common[0], &weights));
+    }
+
+    #[test]
+    fn matching_more_terms_scores_higher_at_equal_rarity() {
+        let both = hit(&[0, 1]);
+        let one = hit(&[0]);
+        let weights = term_weights(10, &[&both, &one], 2);
+        assert!(score(&both, &weights) > score(&one, &weights));
     }
 
     #[test]

@@ -40,7 +40,7 @@ pub fn render_hit(
         style.paint(CYAN, &path),
         style.paint(
             DIM,
-            &format!("{date} · {}/{} terms", hit.score, terms.len())
+            &format!("{date} · {}/{} terms", hit.matched.len(), terms.len())
         ),
         highlight(&hit.snippet, terms, style),
         style.paint(DIM, &format!("cd {path} && claude --resume {}", session.id)),
@@ -161,7 +161,7 @@ mod tests {
             texts: vec![],
         };
         let hit = Hit {
-            score: 1,
+            matched: vec![0],
             snippet: "the transcript".into(),
         };
         let out = render_hit(
