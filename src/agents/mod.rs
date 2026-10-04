@@ -4,8 +4,10 @@ use std::path::{Path, PathBuf};
 use crate::Session;
 
 mod claude_code;
+mod codex;
 
 pub use claude_code::ClaudeCode;
+pub use codex::Codex;
 
 /// A coding agent whose transcripts ccfind can search. Implement it and add it to [`AGENTS`].
 pub trait Agent: Sync {
@@ -19,4 +21,4 @@ pub trait Agent: Sync {
     fn resume_command(&self, id: &str) -> String;
 }
 
-pub const AGENTS: &[&dyn Agent] = &[&ClaudeCode];
+pub const AGENTS: &[&dyn Agent] = &[&ClaudeCode, &Codex];

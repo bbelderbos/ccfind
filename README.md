@@ -1,13 +1,13 @@
 # ccfind
 
-Full-text search across all your Claude Code sessions, in every project directory.
+Full-text search across all your coding-agent sessions (Claude Code and Codex), in every project directory.
 
-`claude --resume` only searches titles. When you remember *what* you discussed but not *where* you ran it, ccfind finds the session and gives you the command to jump back in.
+`claude --resume` only searches titles, and only one agent's. When you remember *what* you discussed but not *where* you ran it, ccfind finds the session and gives you the command to jump back in.
 
 ```console
 $ ccfind mlx-whisper transcript
  1. Transcribe rust-cohort-weekly.mp4 with mlx-whisper
-    ~/Downloads  2026-10-04 · 2/2 terms
+    ~/Downloads  2026-10-04 · claude · 2/2 terms
     …use mlx-whisper to get a transcript for rust-cohort-weekly.mp4…
     cd ~/Downloads && claude --resume 280d6499-fcae-4c47-a673-76cfcd919a80
 ```
@@ -26,18 +26,43 @@ ccfind <term>...
 
 - Terms are case-insensitive substrings; a session doesn't need to contain all of them.
 - Results are ranked by IDF: a term found in few sessions weighs more than one found in many, so a single rare word beats several common ones. Sessions matching every term still rank highest at equal rarity. Ties go to the most recent session; the top 10 are shown.
-- Only your prompts, Claude's replies and the session title are searched. Tool output and thinking are skipped, so a session that merely *read* a file mentioning your term won't match.
+- Only your prompts, the agent's replies and the session title are searched. Tool output and thinking are skipped, so a session that merely *read* a file mentioning your term won't match.
 - In a terminal, output goes through `$PAGER` (default `less`, with `LESS=FRX` unless you set `LESS`), so it starts at result 1 and short output is not paged. `PAGER=cat` turns paging off. Colors are on in a terminal and off when piped or when `NO_COLOR` is set.
 - Exits 1 when nothing matches.
 
 ## How it works
 
-Claude Code stores every session as a JSONL file under `~/.claude/projects/<encoded-dir>/<session-id>.jsonl`.
+Each agent writes its sessions as JSONL files:
 
-- **serde** deserializes each line into a tagged enum. Only `user`, `assistant` and `ai-title` records are kept, and unknown record types and malformed lines are skipped.
-- **rayon** reads and parses the files in parallel: switching `.iter()` to `.par_iter()` is the only change from the sequential version. Searching about 500 sessions (≈500 MB) takes under a second.
+| Agent | Transcripts | Resume |
+|---|---|---|
+| Claude Code | `~/.claude/projects/<encoded-dir>/<session-id>.jsonl` | `claude --resume <id>` |
+| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | `codex resume <id>` |
 
-The transcript format is internal to Claude Code and may change between versions.
+- **serde** deserializes each line into a tagged enum per agent. Only prompts, replies and titles are kept; unknown record types and malformed lines are skipped.
+- **rayon** reads and parses every agent's files in one parallel pass: switching `.iter()` to `.par_iter()` is the only change from the sequential version. Searching about 500 sessions (≈500 MB) takes under a second.
+- Ranking is computed across all agents together, so results from different agents compete on the same scale.
+
+These transcript formats are internal to each agent and may change between versions.
+
+## Adding an agent
+
+Each agent is one file in `src/agents/` that implements the `Agent` trait:
+
+```rust
+pub trait Agent: Sync {
+    fn name(&self) -> &'static str;
+    fn transcripts(&self, home: &Path) -> io::Result<Vec<PathBuf>>;
+    fn parse(&self, path: &Path, contents: &str) -> Session;
+    fn resume_command(&self, id: &str) -> String;
+}
+```
+
+1. Copy `src/agents/codex.rs` and adapt the serde types to your agent's format.
+2. Add a fixture test that parses a few real (scrubbed) lines.
+3. Register it in `AGENTS` in `src/agents/mod.rs`.
+
+Search, ranking, rendering and paging need no changes. An agent that isn't installed (`transcripts` returns `NotFound`) is skipped quietly.
 
 ## Development
 

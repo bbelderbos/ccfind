@@ -42,7 +42,12 @@ pub fn render_hit(
         style.paint(CYAN, &path),
         style.paint(
             DIM,
-            &format!("{date} · {}/{} terms", hit.matched.len(), terms.len())
+            &format!(
+                "{date} · {} · {}/{} terms",
+                agent.name(),
+                hit.matched.len(),
+                terms.len()
+            )
         ),
         highlight(&hit.snippet, terms, style),
         style.paint(
@@ -181,7 +186,7 @@ mod tests {
         );
         assert_eq!(
             out,
-            " 1. Transcribe talk\n    ~/Downloads  2026-10-04 · 1/2 terms\n    …the transcript…\n    cd ~/Downloads && claude --resume abc\n"
+            " 1. Transcribe talk\n    ~/Downloads  2026-10-04 · claude · 1/2 terms\n    …the transcript…\n    cd ~/Downloads && claude --resume abc\n"
         );
     }
 }
