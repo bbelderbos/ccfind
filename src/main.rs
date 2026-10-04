@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::{env, fs, io};
 
-use ccfind::{Session, parse_session, search};
+use ccfind::{Hit, Session, parse_session, search};
 use rayon::prelude::*;
 
 const MAX_RESULTS: usize = 10;
@@ -13,7 +13,7 @@ fn main() -> ExitCode {
         .map(|a| a.to_ascii_lowercase())
         .collect();
     if terms.is_empty() {
-        eprintln!("usage: ccfind <term>...   (all terms must match, case-insensitive)");
+        eprintln!("usage: ccfind <term>...   (ranked by terms matched, case-insensitive)");
         return ExitCode::from(2);
     }
     let Some(home) = env::var_os("HOME") else {
@@ -29,21 +29,23 @@ fn main() -> ExitCode {
         }
     };
 
-    let mut hits: Vec<(Session, String)> = files
+    let mut hits: Vec<(Session, Hit)> = files
         .par_iter()
         .filter_map(|path| {
             let jsonl = fs::read_to_string(path)
                 .inspect_err(|e| eprintln!("ccfind: skipping {}: {e}", path.display()))
                 .ok()?;
             let session = parse_session(&file_stem(path), &jsonl);
-            let snippet = search(&session, &terms)?;
-            Some((session, snippet))
+            let hit = search(&session, &terms)?;
+            Some((session, hit))
         })
         .collect();
-    hits.sort_by(|a, b| b.0.last_active.cmp(&a.0.last_active));
+    hits.sort_by(|(a, a_hit), (b, b_hit)| {
+        (b_hit.score, &b.last_active).cmp(&(a_hit.score, &a.last_active))
+    });
 
-    for (session, snippet) in hits.iter().take(MAX_RESULTS) {
-        print_hit(session, snippet);
+    for (session, hit) in hits.iter().take(MAX_RESULTS) {
+        print_hit(session, hit, terms.len());
     }
     if hits.len() > MAX_RESULTS {
         println!("… {} more, add terms to narrow", hits.len() - MAX_RESULTS);
@@ -79,10 +81,13 @@ fn file_stem(path: &Path) -> String {
         .into_owned()
 }
 
-fn print_hit(session: &Session, snippet: &str) {
+fn print_hit(session: &Session, hit: &Hit, term_count: usize) {
     let date = session.last_active.get(..10).unwrap_or("?");
     let title = session.title.as_deref().unwrap_or("(untitled)");
-    println!("{date}  {}  {title}", session.cwd);
-    println!("    …{snippet}…");
+    println!(
+        "[{}/{term_count}] {date}  {}  {title}",
+        hit.score, session.cwd
+    );
+    println!("    …{}…", hit.snippet);
     println!("    cd {} && claude --resume {}\n", session.cwd, session.id);
 }
