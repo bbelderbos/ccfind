@@ -1,3 +1,4 @@
+use crate::agents::Agent;
 use crate::{Hit, Session};
 
 const TITLE_FALLBACK_LEN: usize = 70;
@@ -25,6 +26,7 @@ const MATCH: &str = "1;33";
 /// One result as a four-line block: rank + title, meta, highlighted snippet, resume command.
 pub fn render_hit(
     rank: usize,
+    agent: &dyn Agent,
     session: &Session,
     hit: &Hit,
     terms: &[String],
@@ -43,7 +45,10 @@ pub fn render_hit(
             &format!("{date} · {}/{} terms", hit.matched.len(), terms.len())
         ),
         highlight(&hit.snippet, terms, style),
-        style.paint(DIM, &format!("cd {path} && claude --resume {}", session.id)),
+        style.paint(
+            DIM,
+            &format!("cd {path} && {}", agent.resume_command(&session.id))
+        ),
     )
 }
 
@@ -105,6 +110,7 @@ fn highlight(text: &str, terms: &[String], style: Style) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::ClaudeCode;
 
     const COLOR: Style = Style { color: true };
     const PLAIN: Style = Style { color: false };
@@ -166,6 +172,7 @@ mod tests {
         };
         let out = render_hit(
             1,
+            &ClaudeCode,
             &session,
             &hit,
             &terms(&["transcript", "rust"]),

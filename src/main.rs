@@ -3,11 +3,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::{env, fs, io};
 
+use ccfind::agents::{AGENTS, Agent};
 use ccfind::render::{Style, render_hit};
-use ccfind::{Hit, Session, parse_session, score, search, term_weights};
+use ccfind::{Hit, Session, score, search, term_weights};
 use rayon::prelude::*;
 
 const MAX_RESULTS: usize = 10;
+
+type Found = (&'static dyn Agent, Session, Hit);
 
 fn main() -> ExitCode {
     let terms: Vec<String> = env::args()
@@ -22,29 +25,26 @@ fn main() -> ExitCode {
         eprintln!("ccfind: HOME is not set");
         return ExitCode::FAILURE;
     };
-    let root = PathBuf::from(&home).join(".claude/projects");
-    let files = match transcript_files(&root) {
-        Ok(files) => files,
-        Err(e) => {
-            eprintln!("ccfind: cannot read {}: {e}", root.display());
-            return ExitCode::FAILURE;
-        }
-    };
+    let files = all_transcripts(Path::new(&home));
+    if files.is_empty() {
+        eprintln!("ccfind: no transcripts found");
+        return ExitCode::FAILURE;
+    }
 
-    let mut hits: Vec<(Session, Hit)> = files
+    let mut hits: Vec<Found> = files
         .par_iter()
-        .filter_map(|path| {
+        .filter_map(|&(agent, ref path)| {
             let jsonl = fs::read_to_string(path)
                 .inspect_err(|e| eprintln!("ccfind: skipping {}: {e}", path.display()))
                 .ok()?;
-            let session = parse_session(&file_stem(path), &jsonl);
+            let session = agent.parse(path, &jsonl);
             let hit = search(&session, &terms)?;
-            Some((session, hit))
+            Some((agent, session, hit))
         })
         .collect();
-    let only_hits: Vec<&Hit> = hits.iter().map(|(_, hit)| hit).collect();
+    let only_hits: Vec<&Hit> = hits.iter().map(|(_, _, hit)| hit).collect();
     let weights = term_weights(files.len(), &only_hits, terms.len());
-    hits.sort_by(|(a, a_hit), (b, b_hit)| {
+    hits.sort_by(|(_, a, a_hit), (_, b, b_hit)| {
         score(b_hit, &weights)
             .total_cmp(&score(a_hit, &weights))
             .then_with(|| b.last_active.cmp(&a.last_active))
@@ -79,17 +79,14 @@ fn main() -> ExitCode {
 
 fn write_results(
     out: &mut dyn Write,
-    hits: &[(Session, Hit)],
+    hits: &[Found],
     terms: &[String],
     home: &str,
     style: Style,
 ) -> io::Result<()> {
-    for (rank, (session, hit)) in hits.iter().take(MAX_RESULTS).enumerate() {
-        writeln!(
-            out,
-            "{}",
-            render_hit(rank + 1, session, hit, terms, home, style)
-        )?;
+    for (rank, (agent, session, hit)) in hits.iter().take(MAX_RESULTS).enumerate() {
+        let block = render_hit(rank + 1, *agent, session, hit, terms, home, style);
+        writeln!(out, "{block}")?;
     }
     if hits.len() > MAX_RESULTS {
         let more = hits.len() - MAX_RESULTS;
@@ -114,26 +111,15 @@ fn spawn_pager() -> Option<Child> {
         .ok()
 }
 
-fn transcript_files(root: &Path) -> io::Result<Vec<PathBuf>> {
+/// Agents that aren't installed (no transcript dir) are skipped quietly.
+fn all_transcripts(home: &Path) -> Vec<(&'static dyn Agent, PathBuf)> {
     let mut files = Vec::new();
-    for project in fs::read_dir(root)? {
-        let project = project?.path();
-        if !project.is_dir() {
-            continue;
-        }
-        for file in fs::read_dir(&project)? {
-            let file = file?.path();
-            if file.extension().is_some_and(|ext| ext == "jsonl") {
-                files.push(file);
-            }
+    for &agent in AGENTS {
+        match agent.transcripts(home) {
+            Ok(paths) => files.extend(paths.into_iter().map(|p| (agent, p))),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => eprintln!("ccfind: skipping {} transcripts: {e}", agent.name()),
         }
     }
-    Ok(files)
-}
-
-fn file_stem(path: &Path) -> String {
-    path.file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned()
+    files
 }

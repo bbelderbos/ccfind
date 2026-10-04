@@ -1,51 +1,7 @@
-use serde::Deserialize;
-
+pub mod agents;
 pub mod render;
 
 const SNIPPET_RADIUS: usize = 60;
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-enum Entry {
-    User(Turn),
-    Assistant(Turn),
-    #[serde(rename_all = "camelCase")]
-    AiTitle {
-        ai_title: String,
-    },
-    #[serde(other)]
-    Other,
-}
-
-#[derive(Deserialize)]
-struct Turn {
-    message: Message,
-    #[serde(default)]
-    timestamp: String,
-    cwd: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct Message {
-    content: Content,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Content {
-    Text(String),
-    Blocks(Vec<Block>),
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Block {
-    Text {
-        text: String,
-    },
-    #[serde(other)]
-    Other,
-}
 
 /// Searchable view of one transcript: title, cwd, and the human/assistant prose (no tool output).
 #[derive(Debug, Default, PartialEq)]
@@ -55,47 +11,6 @@ pub struct Session {
     pub title: Option<String>,
     pub last_active: String,
     pub texts: Vec<String>,
-}
-
-/// Malformed or unknown lines are skipped: transcripts mix many record types we don't need.
-pub fn parse_session(id: &str, jsonl: &str) -> Session {
-    let mut session = Session {
-        id: id.to_string(),
-        ..Session::default()
-    };
-    for entry in jsonl
-        .lines()
-        .filter_map(|l| serde_json::from_str::<Entry>(l).ok())
-    {
-        match entry {
-            Entry::User(turn) | Entry::Assistant(turn) => add_turn(&mut session, turn),
-            Entry::AiTitle { ai_title } => session.title = Some(ai_title),
-            Entry::Other => {}
-        }
-    }
-    session
-}
-
-fn add_turn(session: &mut Session, turn: Turn) {
-    if session.cwd.is_empty()
-        && let Some(cwd) = turn.cwd
-    {
-        session.cwd = cwd;
-    }
-    if turn.timestamp > session.last_active {
-        session.last_active = turn.timestamp;
-    }
-    match turn.message.content {
-        Content::Text(text) => session.texts.push(text),
-        Content::Blocks(blocks) => {
-            session
-                .texts
-                .extend(blocks.into_iter().filter_map(|b| match b {
-                    Block::Text { text } => Some(text),
-                    Block::Other => None,
-                }))
-        }
-    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -173,68 +88,51 @@ fn floor_char_boundary(text: &str, mut i: usize) -> usize {
 mod tests {
     use super::*;
 
-    const TRANSCRIPT: &str = r#"{"type":"mode","mode":"normal"}
-{"type":"user","message":{"role":"user","content":"give me feedback on my Rust preso transcript"},"timestamp":"2026-10-01T16:12:01Z","cwd":"/Users/pybob/code/shorts"}
-{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"borrow"},{"type":"text","text":"The borrow checker section drags."}]},"timestamp":"2026-10-01T16:13:00Z","cwd":"/Users/pybob/code/shorts"}
-{"type":"user","message":{"content":[{"type":"tool_result","content":"secret tool output"}]},"timestamp":"2026-10-01T16:14:00Z"}
-{"type":"ai-title","aiTitle":"Rust talk feedback"}
-not json at all"#;
+    fn session() -> Session {
+        Session {
+            title: Some("Rust talk feedback".into()),
+            texts: vec![
+                "give me feedback on my Rust preso transcript".into(),
+                "The borrow checker section drags.".into(),
+            ],
+            ..Session::default()
+        }
+    }
 
     fn terms(words: &[&str]) -> Vec<String> {
         words.iter().map(|w| w.to_string()).collect()
     }
 
     #[test]
-    fn parses_prose_title_cwd_and_latest_timestamp() {
-        let session = parse_session("abc", TRANSCRIPT);
-        assert_eq!(session.cwd, "/Users/pybob/code/shorts");
-        assert_eq!(session.title.as_deref(), Some("Rust talk feedback"));
-        assert_eq!(session.last_active, "2026-10-01T16:14:00Z");
-        assert_eq!(
-            session.texts,
-            vec![
-                "give me feedback on my Rust preso transcript",
-                "The borrow checker section drags."
-            ]
-        );
-    }
-
-    #[test]
     fn scores_all_terms_across_messages() {
-        let session = parse_session("abc", TRANSCRIPT);
+        let session = session();
         let hit = search(&session, &terms(&["preso", "borrow"])).unwrap();
         assert_eq!(hit.matched, vec![0, 1]);
     }
 
     #[test]
     fn partial_match_scores_lower() {
-        let session = parse_session("abc", TRANSCRIPT);
+        let session = session();
         let hit = search(&session, &terms(&["preso", "python"])).unwrap();
         assert_eq!(hit.matched, vec![0]);
     }
 
     #[test]
     fn no_matching_term_is_no_hit() {
-        let session = parse_session("abc", TRANSCRIPT);
+        let session = session();
         assert_eq!(search(&session, &terms(&["python", "django"])), None);
     }
 
     #[test]
-    fn ignores_tool_output_and_thinking() {
-        let session = parse_session("abc", TRANSCRIPT);
-        assert_eq!(search(&session, &terms(&["secret"])), None);
-    }
-
-    #[test]
     fn matches_title_terms() {
-        let session = parse_session("abc", TRANSCRIPT);
+        let session = session();
         let hit = search(&session, &terms(&["talk"])).unwrap();
         assert_eq!(hit.snippet, "Rust talk feedback");
     }
 
     #[test]
     fn snippet_comes_from_message_with_most_terms() {
-        let session = parse_session("abc", TRANSCRIPT);
+        let session = session();
         let hit = search(&session, &terms(&["rust", "transcript"])).unwrap();
         assert_eq!(hit.snippet, "give me feedback on my Rust preso transcript");
     }
