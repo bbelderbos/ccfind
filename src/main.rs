@@ -1,6 +1,6 @@
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Child, Command, ExitCode, Stdio};
 use std::{env, fs, io};
 
 use ccfind::render::{Style, render_hit};
@@ -50,30 +50,68 @@ fn main() -> ExitCode {
             .then_with(|| b.last_active.cmp(&a.last_active))
     });
 
+    let tty = io::stdout().is_terminal();
     let style = Style {
-        color: io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none(),
+        color: tty && env::var_os("NO_COLOR").is_none(),
     };
-    let home = home.to_string_lossy();
-    let mut out = io::stdout().lock();
-    for (rank, (session, hit)) in hits.iter().take(MAX_RESULTS).enumerate() {
-        let block = render_hit(rank + 1, session, hit, &terms, &home, style);
-        // A closed pipe (e.g. `| head`) just means the reader has seen enough.
-        if writeln!(out, "{block}").is_err() {
-            return ExitCode::SUCCESS;
-        }
+    let mut pager = if tty && !hits.is_empty() {
+        spawn_pager()
+    } else {
+        None
+    };
+    let mut out: Box<dyn Write> = match pager.as_mut().and_then(|p| p.stdin.take()) {
+        Some(stdin) => Box::new(stdin),
+        None => Box::new(io::stdout().lock()),
+    };
+    // A closed pipe (`| head`, or quitting the pager early) just means the reader has seen enough.
+    let _ = write_results(&mut out, &hits, &terms, &home.to_string_lossy(), style);
+    drop(out);
+    if let Some(mut pager) = pager {
+        let _ = pager.wait();
     }
-    if hits.len() > MAX_RESULTS {
-        let _ = writeln!(
-            out,
-            "… {} more, add terms to narrow",
-            hits.len() - MAX_RESULTS
-        );
-    }
+
     if hits.is_empty() {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
     }
+}
+
+fn write_results(
+    out: &mut dyn Write,
+    hits: &[(Session, Hit)],
+    terms: &[String],
+    home: &str,
+    style: Style,
+) -> io::Result<()> {
+    for (rank, (session, hit)) in hits.iter().take(MAX_RESULTS).enumerate() {
+        writeln!(
+            out,
+            "{}",
+            render_hit(rank + 1, session, hit, terms, home, style)
+        )?;
+    }
+    if hits.len() > MAX_RESULTS {
+        let more = hits.len() - MAX_RESULTS;
+        writeln!(out, "… {more} more, add terms to narrow")?;
+    }
+    Ok(())
+}
+
+/// Like git: `$PAGER` (default less), with `LESS=FRX` unless set, so short output isn't paged.
+fn spawn_pager() -> Option<Child> {
+    let pager = env::var("PAGER").unwrap_or_else(|_| "less".to_string());
+    if pager.trim().is_empty() || pager == "cat" {
+        return None;
+    }
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", &pager]).stdin(Stdio::piped());
+    if env::var_os("LESS").is_none() {
+        Command::env(&mut cmd, "LESS", "FRX");
+    }
+    cmd.spawn()
+        .inspect_err(|e| eprintln!("ccfind: pager `{pager}` failed: {e}"))
+        .ok()
 }
 
 fn transcript_files(root: &Path) -> io::Result<Vec<PathBuf>> {

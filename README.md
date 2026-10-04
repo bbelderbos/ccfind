@@ -27,7 +27,7 @@ ccfind <term>...
 - Terms are case-insensitive substrings; a session doesn't need to contain all of them.
 - Results are ranked by IDF: a term found in few sessions weighs more than one found in many, so a single rare word beats several common ones. Sessions matching every term still rank highest at equal rarity. Ties go to the most recent session; the top 10 are shown.
 - Only your prompts, Claude's replies and the session title are searched. Tool output and thinking are skipped, so a session that merely *read* a file mentioning your term won't match.
-- Colors are on in a terminal and off when piped or when `NO_COLOR` is set.
+- In a terminal, output goes through `$PAGER` (default `less`, with `LESS=FRX` unless you set `LESS`), so it starts at result 1 and short output is not paged. `PAGER=cat` turns paging off. Colors are on in a terminal and off when piped or when `NO_COLOR` is set.
 - Exits 1 when nothing matches.
 
 ## How it works
