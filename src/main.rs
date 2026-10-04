@@ -5,7 +5,7 @@ use std::{env, fs, io};
 
 use ccfind::agents::{AGENTS, Agent};
 use ccfind::render::{Style, render_hit};
-use ccfind::{Hit, Session, score, search, term_weights};
+use ccfind::{Hit, Session, USAGE, parse_args, score, search, term_weights};
 use rayon::prelude::*;
 
 const MAX_RESULTS: usize = 10;
@@ -13,14 +13,13 @@ const MAX_RESULTS: usize = 10;
 type Found = (&'static dyn Agent, Session, Hit);
 
 fn main() -> ExitCode {
-    let terms: Vec<String> = env::args()
-        .skip(1)
-        .map(|a| a.to_ascii_lowercase())
-        .collect();
-    if terms.is_empty() {
-        eprintln!("usage: ccfind <term>...   (rare terms rank higher, case-insensitive)");
-        return ExitCode::from(2);
-    }
+    let (terms, scope) = match parse_args(env::args().skip(1)) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            eprintln!("ccfind: {e}\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
     let Some(home) = env::var_os("HOME") else {
         eprintln!("ccfind: HOME is not set");
         return ExitCode::FAILURE;
@@ -37,7 +36,7 @@ fn main() -> ExitCode {
             let jsonl = fs::read_to_string(path)
                 .inspect_err(|e| eprintln!("ccfind: skipping {}: {e}", path.display()))
                 .ok()?;
-            let session = agent.parse(path, &jsonl);
+            let session = agent.parse(path, &jsonl, scope);
             let hit = search(&session, &terms)?;
             Some((agent, session, hit))
         })

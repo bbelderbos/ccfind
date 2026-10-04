@@ -3,6 +3,35 @@ pub mod render;
 
 const SNIPPET_RADIUS: usize = 60;
 
+pub const USAGE: &str =
+    "usage: ccfind [--all] <term>...   (rare terms rank higher, case-insensitive)";
+
+/// What part of a transcript to search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// Prompts, replies and titles only.
+    Conversation,
+    /// Also tool calls, tool output and reasoning.
+    Everything,
+}
+
+/// Splits CLI args into lowercased terms and a scope; `Err` means print usage.
+pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(Vec<String>, Scope), String> {
+    let mut scope = Scope::Conversation;
+    let mut terms = Vec::new();
+    for arg in args {
+        match arg.as_str() {
+            "--all" => scope = Scope::Everything,
+            flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
+            term => terms.push(term.to_ascii_lowercase()),
+        }
+    }
+    if terms.is_empty() {
+        return Err("no search terms".to_string());
+    }
+    Ok((terms, scope))
+}
+
 /// Searchable view of one transcript: title, cwd, and the human/assistant prose (no tool output).
 #[derive(Debug, Default, PartialEq)]
 pub struct Session {
@@ -87,6 +116,28 @@ fn floor_char_boundary(text: &str, mut i: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn args(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_terms_lowercased_with_conversation_scope_by_default() {
+        let parsed = parse_args(args(&["Rust", "MLX"])).unwrap();
+        assert_eq!(parsed, (args(&["rust", "mlx"]), Scope::Conversation));
+    }
+
+    #[test]
+    fn all_flag_widens_scope_anywhere_in_args() {
+        let parsed = parse_args(args(&["rust", "--all", "panic"])).unwrap();
+        assert_eq!(parsed, (args(&["rust", "panic"]), Scope::Everything));
+    }
+
+    #[test]
+    fn rejects_unknown_flags_and_missing_terms() {
+        assert!(parse_args(args(&["--nope", "rust"])).is_err());
+        assert!(parse_args(args(&["--all"])).is_err());
+    }
 
     fn session() -> Session {
         Session {

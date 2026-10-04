@@ -2,9 +2,10 @@ use std::path::{Path, PathBuf};
 use std::{fs, io};
 
 use serde::Deserialize;
+use serde_json::Value;
 
-use super::Agent;
-use crate::Session;
+use super::{Agent, leaf_strings};
+use crate::{Scope, Session};
 
 /// Context Codex injects as user messages; not something the user typed.
 const INJECTED_PREFIXES: &[&str] = &["<environment_context>", "# AGENTS.md instructions"];
@@ -23,7 +24,7 @@ impl Agent for Codex {
         Ok(files)
     }
 
-    fn parse(&self, _path: &Path, contents: &str) -> Session {
+    fn parse(&self, _path: &Path, contents: &str, scope: Scope) -> Session {
         let mut session = Session::default();
         for line in contents
             .lines()
@@ -34,18 +35,7 @@ impl Agent for Codex {
             }
             match line.record {
                 Record::SessionMeta { id, cwd } => (session.id, session.cwd) = (id, cwd),
-                Record::ResponseItem(Item::Message { role, content }) if role != "developer" => {
-                    session
-                        .texts
-                        .extend(content.into_iter().filter_map(|part| match part {
-                            Part::InputText { text } | Part::OutputText { text }
-                                if !is_injected(&text) =>
-                            {
-                                Some(text)
-                            }
-                            _ => None,
-                        }))
-                }
+                Record::ResponseItem(payload) => add_item(&mut session, payload, scope),
                 _ => {}
             }
         }
@@ -55,6 +45,31 @@ impl Agent for Codex {
     fn resume_command(&self, id: &str) -> String {
         format!("codex resume {id}")
     }
+}
+
+/// Messages are typed; any other item (tool calls, their output, reasoning) is only
+/// searched in `Scope::Everything`, as raw strings.
+fn add_item(session: &mut Session, payload: Value, scope: Scope) {
+    if payload["type"] != "message" {
+        if scope == Scope::Everything {
+            leaf_strings(payload, &mut session.texts);
+        }
+        return;
+    }
+    let Ok(Message { role, content }) = serde_json::from_value(payload) else {
+        return;
+    };
+    if role == "developer" {
+        return;
+    }
+    session
+        .texts
+        .extend(content.into_iter().filter_map(|part| match part {
+            Part::InputText { text } | Part::OutputText { text } if !is_injected(&text) => {
+                Some(text)
+            }
+            _ => None,
+        }))
 }
 
 fn collect_jsonl(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
@@ -88,20 +103,15 @@ enum Record {
         id: String,
         cwd: String,
     },
-    ResponseItem(Item),
+    ResponseItem(Value),
     #[serde(other)]
     Other,
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Item {
-    Message {
-        role: String,
-        content: Vec<Part>,
-    },
-    #[serde(other)]
-    Other,
+struct Message {
+    role: String,
+    content: Vec<Part>,
 }
 
 #[derive(Deserialize)]
@@ -132,7 +142,7 @@ not json"#;
 
     #[test]
     fn reads_id_and_cwd_from_session_meta() {
-        let session = Codex.parse(Path::new("rollout.jsonl"), ROLLOUT);
+        let session = Codex.parse(Path::new("rollout.jsonl"), ROLLOUT, Scope::Conversation);
         assert_eq!(session.id, "019bd054");
         assert_eq!(session.cwd, "/Users/pybob/code/shorts");
         assert_eq!(session.last_active, "2026-01-18T09:00:09.000Z");
@@ -140,10 +150,22 @@ not json"#;
 
     #[test]
     fn keeps_user_and_assistant_prose_only() {
-        let session = Codex.parse(Path::new("rollout.jsonl"), ROLLOUT);
+        let session = Codex.parse(Path::new("rollout.jsonl"), ROLLOUT, Scope::Conversation);
         assert_eq!(
             session.texts,
             vec!["transcribe my rust talk", "Done, saved to talk.txt"]
+        );
+    }
+
+    #[test]
+    fn everything_scope_adds_tool_calls_but_not_injected_context() {
+        let session = Codex.parse(Path::new("rollout.jsonl"), ROLLOUT, Scope::Everything);
+        assert!(session.texts.iter().any(|t| t == "secret"));
+        assert!(
+            !session
+                .texts
+                .iter()
+                .any(|t| t.contains("environment_context"))
         );
     }
 }
