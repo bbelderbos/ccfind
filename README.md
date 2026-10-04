@@ -21,14 +21,15 @@ cargo install --path .
 ## Usage
 
 ```bash
-ccfind <term>...
+ccfind [--all] <term>...
 ```
 
 - Terms are case-insensitive substrings; a session doesn't need to contain all of them.
 - Results are ranked by IDF: a term found in few sessions weighs more than one found in many, so a single rare word beats several common ones. Sessions matching every term still rank highest at equal rarity. Ties go to the most recent session; the top 10 are shown.
-- Only your prompts, the agent's replies and the session title are searched. Tool output and thinking are skipped, so a session that merely *read* a file mentioning your term won't match.
+- By default only your prompts, the agent's replies and the session title are searched. Tool output and thinking are skipped, so a session that merely *read* a file mentioning your term won't match.
+- `--all` also searches tool calls, tool output and reasoning. Use it when what you remember was in a result, like an error message. Ids, signatures and base64 data are never searched, and neither is context the agent injects (memory, `CLAUDE.md`, `AGENTS.md`).
 - In a terminal, output goes through `$PAGER` (default `less`, with `LESS=FRX` unless you set `LESS`), so it starts at result 1 and short output is not paged. `PAGER=cat` turns paging off. Colors are on in a terminal and off when piped or when `NO_COLOR` is set.
-- Exits 1 when nothing matches.
+- Exits 1 when nothing matches, 2 on a usage error.
 
 ## How it works
 
@@ -39,7 +40,7 @@ Each agent writes its sessions as JSONL files:
 | Claude Code | `~/.claude/projects/<encoded-dir>/<session-id>.jsonl` | `claude --resume <id>` |
 | Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | `codex resume <id>` |
 
-- **serde** deserializes each line into a tagged enum per agent. Only prompts, replies and titles are kept; unknown record types and malformed lines are skipped.
+- **serde** deserializes each line into a tagged enum per agent. Prompts, replies and titles are typed; tool payloads are kept as `serde_json::Value` and flattened to their strings only for `--all`. Unknown record types and malformed lines are skipped.
 - **rayon** reads and parses every agent's files in one parallel pass: switching `.iter()` to `.par_iter()` is the only change from the sequential version. Searching about 500 sessions (≈500 MB) takes under a second.
 - Ranking is computed across all agents together, so results from different agents compete on the same scale.
 
@@ -53,13 +54,13 @@ Each agent is one file in `src/agents/` that implements the `Agent` trait:
 pub trait Agent: Sync {
     fn name(&self) -> &'static str;
     fn transcripts(&self, home: &Path) -> io::Result<Vec<PathBuf>>;
-    fn parse(&self, path: &Path, contents: &str) -> Session;
+    fn parse(&self, path: &Path, contents: &str, scope: Scope) -> Session;
     fn resume_command(&self, id: &str) -> String;
 }
 ```
 
 1. Copy `src/agents/codex.rs` and adapt the serde types to your agent's format.
-2. Add a fixture test that parses a few real (scrubbed) lines.
+2. Add fixture tests that parse a few real (scrubbed) lines, in both scopes. For `Scope::Everything`, pass tool payloads to `leaf_strings`.
 3. Register it in `AGENTS` in `src/agents/mod.rs`.
 
 Search, ranking, rendering and paging need no changes. An agent that isn't installed (`transcripts` returns `NotFound`) is skipped quietly.
