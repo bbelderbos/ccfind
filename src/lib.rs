@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+pub mod render;
+
 const SNIPPET_RADIUS: usize = 60;
 
 #[derive(Deserialize)]

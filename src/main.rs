@@ -1,7 +1,9 @@
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::{env, fs, io};
 
+use ccfind::render::{Style, render_hit};
 use ccfind::{Hit, Session, parse_session, search};
 use rayon::prelude::*;
 
@@ -20,7 +22,7 @@ fn main() -> ExitCode {
         eprintln!("ccfind: HOME is not set");
         return ExitCode::FAILURE;
     };
-    let root = PathBuf::from(home).join(".claude/projects");
+    let root = PathBuf::from(&home).join(".claude/projects");
     let files = match transcript_files(&root) {
         Ok(files) => files,
         Err(e) => {
@@ -44,11 +46,24 @@ fn main() -> ExitCode {
         (b_hit.score, &b.last_active).cmp(&(a_hit.score, &a.last_active))
     });
 
-    for (session, hit) in hits.iter().take(MAX_RESULTS) {
-        print_hit(session, hit, terms.len());
+    let style = Style {
+        color: io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none(),
+    };
+    let home = home.to_string_lossy();
+    let mut out = io::stdout().lock();
+    for (rank, (session, hit)) in hits.iter().take(MAX_RESULTS).enumerate() {
+        let block = render_hit(rank + 1, session, hit, &terms, &home, style);
+        // A closed pipe (e.g. `| head`) just means the reader has seen enough.
+        if writeln!(out, "{block}").is_err() {
+            return ExitCode::SUCCESS;
+        }
     }
     if hits.len() > MAX_RESULTS {
-        println!("… {} more, add terms to narrow", hits.len() - MAX_RESULTS);
+        let _ = writeln!(
+            out,
+            "… {} more, add terms to narrow",
+            hits.len() - MAX_RESULTS
+        );
     }
     if hits.is_empty() {
         ExitCode::FAILURE
@@ -79,15 +94,4 @@ fn file_stem(path: &Path) -> String {
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned()
-}
-
-fn print_hit(session: &Session, hit: &Hit, term_count: usize) {
-    let date = session.last_active.get(..10).unwrap_or("?");
-    let title = session.title.as_deref().unwrap_or("(untitled)");
-    println!(
-        "[{}/{term_count}] {date}  {}  {title}",
-        hit.score, session.cwd
-    );
-    println!("    …{}…", hit.snippet);
-    println!("    cd {} && claude --resume {}\n", session.cwd, session.id);
 }
