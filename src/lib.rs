@@ -3,8 +3,8 @@ pub mod render;
 
 const SNIPPET_RADIUS: usize = 60;
 
-pub const USAGE: &str =
-    "usage: ccfind [--all] <term>...   (rare terms rank higher, case-insensitive)";
+pub const USAGE: &str = "usage: ccfind [--all] [--project <dir>] [--since <YYYY-MM-DD>] <term>...   \
+     (rare terms rank higher, case-insensitive)";
 
 /// What part of a transcript to search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,13 +15,57 @@ pub enum Scope {
     Everything,
 }
 
-/// Splits CLI args into lowercased terms and a scope; `Err` means print usage.
-pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(Vec<String>, Scope), String> {
+/// Which sessions to search, independent of the terms.
+#[derive(Debug, Default, PartialEq)]
+pub struct Filter {
+    /// Lowercased substring of the session's directory.
+    pub project: Option<String>,
+    /// `YYYY-MM-DD`; sessions last active before this day are skipped.
+    pub since: Option<String>,
+}
+
+impl Filter {
+    pub fn admits(&self, session: &Session) -> bool {
+        let in_project = self
+            .project
+            .as_ref()
+            .is_none_or(|p| session.cwd.to_lowercase().contains(p));
+        // ISO-8601 timestamps sort lexicographically, so a date prefix compares correctly.
+        let recent_enough = self
+            .since
+            .as_ref()
+            .is_none_or(|day| session.last_active.as_str() >= day.as_str());
+        in_project && recent_enough
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Query {
+    pub terms: Vec<String>,
+    pub scope: Scope,
+    pub filter: Filter,
+}
+
+/// Splits CLI args into lowercased terms, a scope and a filter; `Err` means print usage.
+pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Query, String> {
     let mut scope = Scope::Conversation;
+    let mut filter = Filter::default();
     let mut terms = Vec::new();
-    for arg in args {
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--all" => scope = Scope::Everything,
+            "--project" => {
+                let dir = args.next().ok_or("--project needs a directory")?;
+                filter.project = Some(dir.to_lowercase());
+            }
+            "--since" => {
+                let day = args.next().ok_or("--since needs a date")?;
+                if !is_iso_date(&day) {
+                    return Err(format!("--since expects YYYY-MM-DD, got {day}"));
+                }
+                filter.since = Some(day);
+            }
             flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
             term => terms.push(term.to_ascii_lowercase()),
         }
@@ -29,7 +73,19 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(Vec<String>
     if terms.is_empty() {
         return Err("no search terms".to_string());
     }
-    Ok((terms, scope))
+    Ok(Query {
+        terms,
+        scope,
+        filter,
+    })
+}
+
+fn is_iso_date(s: &str) -> bool {
+    s.len() == 10
+        && s.char_indices().all(|(i, c)| match i {
+            4 | 7 => c == '-',
+            _ => c.is_ascii_digit(),
+        })
 }
 
 /// Searchable view of one transcript: title, cwd, and the human/assistant prose (no tool output).
@@ -121,22 +177,85 @@ mod tests {
         words.iter().map(|w| w.to_string()).collect()
     }
 
+    fn query(terms: &[&str], scope: Scope, filter: Filter) -> Query {
+        Query {
+            terms: args(terms),
+            scope,
+            filter,
+        }
+    }
+
     #[test]
     fn parses_terms_lowercased_with_conversation_scope_by_default() {
         let parsed = parse_args(args(&["Rust", "MLX"])).unwrap();
-        assert_eq!(parsed, (args(&["rust", "mlx"]), Scope::Conversation));
+        let expected = query(&["rust", "mlx"], Scope::Conversation, Filter::default());
+        assert_eq!(parsed, expected);
     }
 
     #[test]
     fn all_flag_widens_scope_anywhere_in_args() {
         let parsed = parse_args(args(&["rust", "--all", "panic"])).unwrap();
-        assert_eq!(parsed, (args(&["rust", "panic"]), Scope::Everything));
+        let expected = query(&["rust", "panic"], Scope::Everything, Filter::default());
+        assert_eq!(parsed, expected);
+    }
+
+    #[test]
+    fn parses_project_and_since_filters() {
+        let parsed = parse_args(args(&[
+            "--project",
+            "CCFind",
+            "rust",
+            "--since",
+            "2026-10-01",
+        ]))
+        .unwrap();
+        let filter = Filter {
+            project: Some("ccfind".into()),
+            since: Some("2026-10-01".into()),
+        };
+        assert_eq!(parsed, query(&["rust"], Scope::Conversation, filter));
     }
 
     #[test]
     fn rejects_unknown_flags_and_missing_terms() {
         assert!(parse_args(args(&["--nope", "rust"])).is_err());
         assert!(parse_args(args(&["--all"])).is_err());
+    }
+
+    #[test]
+    fn rejects_filter_flags_without_valid_values() {
+        assert!(parse_args(args(&["rust", "--project"])).is_err());
+        assert!(parse_args(args(&["rust", "--since"])).is_err());
+        assert!(parse_args(args(&["rust", "--since", "7d"])).is_err());
+        assert!(parse_args(args(&["rust", "--since", "2026/10/01"])).is_err());
+    }
+
+    fn located(cwd: &str, last_active: &str) -> Session {
+        Session {
+            cwd: cwd.into(),
+            last_active: last_active.into(),
+            ..Session::default()
+        }
+    }
+
+    #[test]
+    fn project_filter_matches_directory_substring_case_insensitively() {
+        let filter = Filter {
+            project: Some("ccfind".into()),
+            ..Filter::default()
+        };
+        assert!(filter.admits(&located("/Users/bob/code/CCFind", "")));
+        assert!(!filter.admits(&located("/Users/bob/code/shorts", "")));
+    }
+
+    #[test]
+    fn since_filter_includes_the_given_day() {
+        let filter = Filter {
+            since: Some("2026-10-01".into()),
+            ..Filter::default()
+        };
+        assert!(filter.admits(&located("", "2026-10-01T00:00:01Z")));
+        assert!(!filter.admits(&located("", "2026-09-30T23:59:59Z")));
     }
 
     fn session() -> Session {
