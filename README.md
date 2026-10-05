@@ -21,14 +21,14 @@ cargo install --path .
 ## Usage
 
 ```bash
-ccfind [--all] [--project <dir>] [--since <YYYY-MM-DD>] <term>...
+ccfind [--all] [--project <dir>] [--since <YYYY-MM-DD|Nd>] <term>...
 ```
 
 - Terms are case-insensitive substrings; a session doesn't need to contain all of them.
 - Results are ranked by IDF: a term found in few sessions weighs more than one found in many, so a single rare word beats several common ones. Sessions matching every term still rank highest at equal rarity. Ties go to the most recent session; the top 10 are shown.
 - By default only your prompts, the agent's replies and the session title are searched. Tool output and thinking are skipped, so a session that merely *read* a file mentioning your term won't match.
 - `--all` also searches tool calls, tool output and reasoning. Use it when what you remember was in a result, like an error message. Ids, signatures and base64 data are never searched, and neither is context the agent injects (memory, `CLAUDE.md`, `AGENTS.md`).
-- `--project` keeps sessions whose directory contains the given text (case-insensitive), e.g. `--project ccfind`. `--since` keeps sessions active on or after a date (UTC, like the dates shown). Ranking is computed over the filtered sessions only.
+- `--project` keeps sessions whose directory contains the given text (case-insensitive), e.g. `--project ccfind`. `--since` keeps sessions active on or after a date (UTC, like the dates shown), given as `2026-10-01` or as days back, e.g. `7d`. Ranking is computed over the filtered sessions only.
 - In a terminal, output goes through `$PAGER` (default `less`, with `LESS=FRX` unless you set `LESS`), so it starts at result 1 and short output is not paged. `PAGER=cat` turns paging off. Colors are on in a terminal and off when piped or when `NO_COLOR` is set.
 - Exits 1 when nothing matches, 2 on a usage error.
 

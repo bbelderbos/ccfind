@@ -1,9 +1,11 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 pub mod agents;
 pub mod render;
 
 const SNIPPET_RADIUS: usize = 60;
 
-pub const USAGE: &str = "usage: ccfind [--all] [--project <dir>] [--since <YYYY-MM-DD>] <term>...   \
+pub const USAGE: &str = "usage: ccfind [--all] [--project <dir>] [--since <YYYY-MM-DD|Nd>] <term>...   \
      (rare terms rank higher, case-insensitive)";
 
 /// What part of a transcript to search.
@@ -60,11 +62,8 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Query, Strin
                 filter.project = Some(dir.to_lowercase());
             }
             "--since" => {
-                let day = args.next().ok_or("--since needs a date")?;
-                if !is_iso_date(&day) {
-                    return Err(format!("--since expects YYYY-MM-DD, got {day}"));
-                }
-                filter.since = Some(day);
+                let value = args.next().ok_or("--since needs a date")?;
+                filter.since = Some(parse_since(&value, epoch_days_now())?);
             }
             flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
             term => terms.push(term.to_ascii_lowercase()),
@@ -78,6 +77,39 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Query, Strin
         scope,
         filter,
     })
+}
+
+/// `YYYY-MM-DD` as is, or `Nd` as the date N days before `today` (days since the Unix epoch).
+fn parse_since(value: &str, today: u64) -> Result<String, String> {
+    if is_iso_date(value) {
+        return Ok(value.to_string());
+    }
+    value
+        .strip_suffix('d')
+        .and_then(|n| n.parse::<u64>().ok())
+        .map(|n| iso_date(today.saturating_sub(n)))
+        .ok_or_else(|| format!("--since expects YYYY-MM-DD or Nd (e.g. 7d), got {value}"))
+}
+
+fn epoch_days_now() -> u64 {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    secs / 86_400
+}
+
+/// Days since the Unix epoch to a UTC `YYYY-MM-DD` (Howard Hinnant's civil_from_days).
+fn iso_date(epoch_days: u64) -> String {
+    let z = epoch_days + 719_468;
+    let era = z / 146_097;
+    let doe = z % 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + u64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 fn is_iso_date(s: &str) -> bool {
@@ -226,8 +258,24 @@ mod tests {
     fn rejects_filter_flags_without_valid_values() {
         assert!(parse_args(args(&["rust", "--project"])).is_err());
         assert!(parse_args(args(&["rust", "--since"])).is_err());
-        assert!(parse_args(args(&["rust", "--since", "7d"])).is_err());
+        assert!(parse_args(args(&["rust", "--since", "d"])).is_err());
+        assert!(parse_args(args(&["rust", "--since", "7w"])).is_err());
         assert!(parse_args(args(&["rust", "--since", "2026/10/01"])).is_err());
+    }
+
+    #[test]
+    fn converts_epoch_days_to_iso_dates() {
+        assert_eq!(iso_date(0), "1970-01-01");
+        assert_eq!(iso_date(11_016), "2000-02-29");
+        assert_eq!(iso_date(20_731), "2026-10-05");
+    }
+
+    #[test]
+    fn since_days_counts_back_from_today_across_month_ends() {
+        let today = 20_731; // 2026-10-05
+        assert_eq!(parse_since("0d", today).unwrap(), "2026-10-05");
+        assert_eq!(parse_since("7d", today).unwrap(), "2026-09-28");
+        assert_eq!(parse_since("2026-01-01", today).unwrap(), "2026-01-01");
     }
 
     fn located(cwd: &str, last_active: &str) -> Session {
