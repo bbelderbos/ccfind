@@ -41,7 +41,7 @@ Each agent writes its sessions as JSONL files:
 | Claude Code | `~/.claude/projects/<encoded-dir>/<session-id>.jsonl` | `claude --resume <id>` |
 | Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | `codex resume <id>` |
 
-- **serde** deserializes each line into a tagged enum per agent. Prompts, replies and titles are typed; tool payloads are kept as `serde_json::Value` and flattened to their strings only for `--all`. Unknown record types and malformed lines are skipped.
+- **[bob-json-parser](https://crates.io/crates/bob-json-parser)**, a hand-written JSON parser built in the [Scripter to Rust](https://scriptertorust.com) cohort, parses each line into a `JsonValue`. Each agent picks out prompts, replies and titles by key; tool payloads are flattened to their strings only for `--all`. Unknown record types and malformed lines are skipped.
 - **rayon** reads and parses every agent's files in one parallel pass: switching `.iter()` to `.par_iter()` is the only change from the sequential version. Searching about 500 sessions (≈500 MB) takes under a second.
 - Ranking is computed across all agents together, so results from different agents compete on the same scale.
 
@@ -60,7 +60,7 @@ pub trait Agent: Sync {
 }
 ```
 
-1. Copy `src/agents/codex.rs` and adapt the serde types to your agent's format.
+1. Copy `src/agents/codex.rs` and adapt the field lookups to your agent's format.
 2. Add fixture tests that parse a few real (scrubbed) lines, in both scopes. For `Scope::Everything`, pass tool payloads to `leaf_strings`.
 3. Register it in `AGENTS` in `src/agents/mod.rs`.
 
