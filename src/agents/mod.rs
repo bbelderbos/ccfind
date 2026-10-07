@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde_json::Value;
+use rust_json_parser::JsonValue;
 
 use crate::{Scope, Session};
 
@@ -37,12 +38,29 @@ const SKIPPED_KEYS: &[&str] = &[
     "encrypted_content",
 ];
 
+type Object = HashMap<String, JsonValue>;
+
+/// A JSONL line as an object; `None` for malformed lines or non-object values.
+fn parse_object(line: &str) -> Option<Object> {
+    match rust_json_parser::parse(line) {
+        Ok(JsonValue::Object(object)) => Some(object),
+        _ => None,
+    }
+}
+
+fn take_string(object: &mut Object, key: &str) -> Option<String> {
+    match object.remove(key) {
+        Some(JsonValue::String(s)) => Some(s),
+        _ => None,
+    }
+}
+
 /// Every string in a JSON value (tool input/output), minus the [`SKIPPED_KEYS`] fields.
-fn leaf_strings(value: Value, out: &mut Vec<String>) {
+fn leaf_strings(value: JsonValue, out: &mut Vec<String>) {
     match value {
-        Value::String(s) => out.push(s),
-        Value::Array(items) => items.into_iter().for_each(|v| leaf_strings(v, out)),
-        Value::Object(map) => map
+        JsonValue::String(s) => out.push(s),
+        JsonValue::Array(items) => items.into_iter().for_each(|v| leaf_strings(v, out)),
+        JsonValue::Object(map) => map
             .into_iter()
             .filter(|(key, _)| !SKIPPED_KEYS.contains(&key.as_str()))
             .for_each(|(_, v)| leaf_strings(v, out)),
@@ -53,19 +71,21 @@ fn leaf_strings(value: Value, out: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
-    fn collects_nested_strings_except_skipped_keys() {
-        let value = json!({
-            "tool_use_id": "toolu_123",
-            "content": [{"type": "text", "text": "thread panicked"}],
-            "input": {"command": "cargo test", "timeout": 120},
-            "signature": "c2lnbmF0dXJl"
-        });
+    fn collects_nested_strings_except_skipped_keys() -> rust_json_parser::Result<()> {
+        let value = rust_json_parser::parse(
+            r#"{
+                "tool_use_id": "toolu_123",
+                "content": [{"type": "text", "text": "thread panicked"}],
+                "input": {"command": "cargo test", "timeout": 120},
+                "signature": "c2lnbmF0dXJl"
+            }"#,
+        )?;
         let mut out = Vec::new();
         leaf_strings(value, &mut out);
         out.sort();
         assert_eq!(out, vec!["cargo test", "thread panicked"]);
+        Ok(())
     }
 }

@@ -1,10 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-use serde::Deserialize;
-use serde_json::Value;
+use rust_json_parser::JsonValue;
 
-use super::{Agent, leaf_strings};
+use super::{Agent, Object, leaf_strings, parse_object, take_string};
 use crate::{Scope, Session};
 
 pub struct ClaudeCode;
@@ -42,104 +41,63 @@ impl Agent for ClaudeCode {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-enum Entry {
-    User(Turn),
-    Assistant(Turn),
-    #[serde(rename_all = "camelCase")]
-    AiTitle {
-        ai_title: String,
-    },
-    #[serde(other)]
-    Other,
-}
-
-#[derive(Deserialize)]
-struct Turn {
-    message: Message,
-    #[serde(default)]
-    timestamp: String,
-    cwd: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct Message {
-    content: Content,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Content {
-    Text(String),
-    Blocks(Vec<Block>),
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Block {
-    Text {
-        text: String,
-    },
-    Thinking {
-        thinking: String,
-    },
-    ToolUse {
-        input: Value,
-    },
-    ToolResult {
-        #[serde(default)]
-        content: Value,
-    },
-    #[serde(other)]
-    Other,
-}
-
 /// Malformed or unknown lines are skipped: transcripts mix many record types we don't need.
 fn parse_session(id: &str, jsonl: &str, scope: Scope) -> Session {
     let mut session = Session {
         id: id.to_string(),
         ..Session::default()
     };
-    for entry in jsonl
-        .lines()
-        .filter_map(|l| serde_json::from_str::<Entry>(l).ok())
-    {
-        match entry {
-            Entry::User(turn) | Entry::Assistant(turn) => add_turn(&mut session, turn, scope),
-            Entry::AiTitle { ai_title } => session.title = Some(ai_title),
-            Entry::Other => {}
+    for mut entry in jsonl.lines().filter_map(parse_object) {
+        match take_string(&mut entry, "type").as_deref() {
+            Some("user" | "assistant") => add_turn(&mut session, entry, scope),
+            Some("ai-title") => {
+                if let Some(title) = take_string(&mut entry, "aiTitle") {
+                    session.title = Some(title);
+                }
+            }
+            _ => {}
         }
     }
     session
 }
 
-fn add_turn(session: &mut Session, turn: Turn, scope: Scope) {
+fn add_turn(session: &mut Session, mut turn: Object, scope: Scope) {
     if session.cwd.is_empty()
-        && let Some(cwd) = turn.cwd
+        && let Some(cwd) = take_string(&mut turn, "cwd")
     {
         session.cwd = cwd;
     }
-    if turn.timestamp > session.last_active {
-        session.last_active = turn.timestamp;
+    if let Some(timestamp) = take_string(&mut turn, "timestamp")
+        && timestamp > session.last_active
+    {
+        session.last_active = timestamp;
     }
-    match turn.message.content {
-        Content::Text(text) => session.texts.push(text),
-        Content::Blocks(blocks) => {
-            for block in blocks {
-                match (block, scope) {
-                    (Block::Text { text }, _) => session.texts.push(text),
-                    (Block::Thinking { thinking }, Scope::Everything) => {
-                        session.texts.push(thinking)
-                    }
-                    (Block::ToolUse { input: value }, Scope::Everything)
-                    | (Block::ToolResult { content: value }, Scope::Everything) => {
-                        leaf_strings(value, &mut session.texts)
-                    }
-                    _ => {}
-                }
-            }
-        }
+    let content = match turn.remove("message") {
+        Some(JsonValue::Object(mut message)) => message.remove("content"),
+        _ => None,
+    };
+    match content {
+        Some(JsonValue::String(text)) => session.texts.push(text),
+        Some(JsonValue::Array(blocks)) => blocks
+            .into_iter()
+            .for_each(|block| add_block(session, block, scope)),
+        _ => {}
+    }
+}
+
+fn add_block(session: &mut Session, block: JsonValue, scope: Scope) {
+    let JsonValue::Object(mut block) = block else {
+        return;
+    };
+    let field = match (take_string(&mut block, "type").as_deref(), scope) {
+        (Some("text"), _) => "text",
+        (Some("thinking"), Scope::Everything) => "thinking",
+        (Some("tool_use"), Scope::Everything) => "input",
+        (Some("tool_result"), Scope::Everything) => "content",
+        _ => return,
+    };
+    if let Some(value) = block.remove(field) {
+        leaf_strings(value, &mut session.texts);
     }
 }
 

@@ -1,10 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-use serde::Deserialize;
-use serde_json::Value;
+use rust_json_parser::JsonValue;
 
-use super::{Agent, leaf_strings};
+use super::{Agent, leaf_strings, parse_object, take_string};
 use crate::{Scope, Session};
 
 /// Context Codex injects as user messages; not something the user typed.
@@ -26,17 +25,26 @@ impl Agent for Codex {
 
     fn parse(&self, _path: &Path, contents: &str, scope: Scope) -> Session {
         let mut session = Session::default();
-        for line in contents
-            .lines()
-            .filter_map(|l| serde_json::from_str::<Line>(l).ok())
-        {
-            if line.timestamp > session.last_active {
-                session.last_active = line.timestamp;
+        // Only session_meta and response_item lines count towards last_active.
+        for mut line in contents.lines().filter_map(parse_object) {
+            match (
+                take_string(&mut line, "type").as_deref(),
+                line.remove("payload"),
+            ) {
+                (Some("session_meta"), Some(JsonValue::Object(mut meta))) => {
+                    if let (Some(id), Some(cwd)) =
+                        (take_string(&mut meta, "id"), take_string(&mut meta, "cwd"))
+                    {
+                        (session.id, session.cwd) = (id, cwd);
+                    }
+                }
+                (Some("response_item"), Some(payload)) => add_item(&mut session, payload, scope),
+                _ => continue,
             }
-            match line.record {
-                Record::SessionMeta { id, cwd } => (session.id, session.cwd) = (id, cwd),
-                Record::ResponseItem(payload) => add_item(&mut session, payload, scope),
-                _ => {}
+            if let Some(timestamp) = take_string(&mut line, "timestamp")
+                && timestamp > session.last_active
+            {
+                session.last_active = timestamp;
             }
         }
         session
@@ -47,29 +55,40 @@ impl Agent for Codex {
     }
 }
 
-/// Messages are typed; any other item (tool calls, their output, reasoning) is only
-/// searched in `Scope::Everything`, as raw strings.
-fn add_item(session: &mut Session, payload: Value, scope: Scope) {
-    if payload["type"] != "message" {
+/// Messages are read field by field; any other item (tool calls, their output, reasoning)
+/// is only searched in `Scope::Everything`, as raw strings.
+fn add_item(session: &mut Session, payload: JsonValue, scope: Scope) {
+    let JsonValue::Object(mut item) = payload else {
+        return;
+    };
+    if item.get("type").and_then(JsonValue::as_str) != Some("message") {
         if scope == Scope::Everything {
-            leaf_strings(payload, &mut session.texts);
+            leaf_strings(JsonValue::Object(item), &mut session.texts);
         }
         return;
     }
-    let Ok(Message { role, content }) = serde_json::from_value(payload) else {
-        return;
-    };
-    if role == "developer" {
+    if take_string(&mut item, "role").is_none_or(|role| role == "developer") {
         return;
     }
-    session
-        .texts
-        .extend(content.into_iter().filter_map(|part| match part {
-            Part::InputText { text } | Part::OutputText { text } if !is_injected(&text) => {
-                Some(text)
-            }
-            _ => None,
-        }))
+    let Some(JsonValue::Array(parts)) = item.remove("content") else {
+        return;
+    };
+    session.texts.extend(
+        parts
+            .into_iter()
+            .filter_map(part_text)
+            .filter(|text| !is_injected(text)),
+    )
+}
+
+fn part_text(part: JsonValue) -> Option<String> {
+    let JsonValue::Object(mut part) = part else {
+        return None;
+    };
+    match take_string(&mut part, "type")?.as_str() {
+        "input_text" | "output_text" => take_string(&mut part, "text"),
+        _ => None,
+    }
 }
 
 fn collect_jsonl(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
@@ -86,45 +105,6 @@ fn collect_jsonl(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
 
 fn is_injected(text: &str) -> bool {
     INJECTED_PREFIXES.iter().any(|p| text.starts_with(p))
-}
-
-#[derive(Deserialize)]
-struct Line {
-    #[serde(default)]
-    timestamp: String,
-    #[serde(flatten)]
-    record: Record,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
-enum Record {
-    SessionMeta {
-        id: String,
-        cwd: String,
-    },
-    ResponseItem(Value),
-    #[serde(other)]
-    Other,
-}
-
-#[derive(Deserialize)]
-struct Message {
-    role: String,
-    content: Vec<Part>,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Part {
-    InputText {
-        text: String,
-    },
-    OutputText {
-        text: String,
-    },
-    #[serde(other)]
-    Other,
 }
 
 #[cfg(test)]
