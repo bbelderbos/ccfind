@@ -6,6 +6,7 @@ description = "Full-text search across Claude Code and Codex sessions, with the 
 license = "MIT"
 repository = "https://github.com/bbelderbos/ccfind"
 readme = "README.md"
+exclude = ["docs/"]
 keywords = ["claude", "codex", "search", "cli", "transcripts"]
 categories = ["command-line-utilities", "development-tools"]
 

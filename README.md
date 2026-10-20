@@ -4,13 +4,7 @@ Full-text search across all your coding-agent sessions (Claude Code and Codex), 
 
 `claude --resume` only searches titles, and only one agent's. When you remember *what* you discussed but not *where* you ran it, ccfind finds the session and gives you the command to jump back in.
 
-```console
-$ ccfind mlx-whisper transcript
- 1. Transcribe rust-cohort-weekly.mp4 with mlx-whisper
-    ~/Downloads  2026-10-04 · claude · 2/2 terms
-    …use mlx-whisper to get a transcript for rust-cohort-weekly.mp4…
-    cd ~/Downloads && claude --resume 280d6499-fcae-4c47-a673-76cfcd919a80
-```
+![ccfind mp4 subtitles finds matching sessions in three project directories, each with the command to resume it](https://raw.githubusercontent.com/bbelderbos/ccfind/main/docs/ccfind-search.png)
 
 ## Install
 
