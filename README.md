@@ -15,7 +15,7 @@ $ ccfind mlx-whisper transcript
 ## Install
 
 ```bash
-cargo install --path .
+cargo install ccfind
 ```
 
 ## Usage

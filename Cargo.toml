@@ -2,6 +2,12 @@
 name = "ccfind"
 version = "0.1.0"
 edition = "2024"
+description = "Full-text search across Claude Code and Codex sessions, with the command to resume them"
+license = "MIT"
+repository = "https://github.com/bbelderbos/ccfind"
+readme = "README.md"
+keywords = ["claude", "codex", "search", "cli", "transcripts"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 bob-json-parser = "0.1.1"
